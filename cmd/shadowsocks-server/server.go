@@ -5,7 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	ss "github.com/shadowsocks/shadowsocks-go/shadowsocks"
+	ss "github.com/fym201/shadowsocks-go/shadowsocks"
 	"io"
 	"log"
 	"net"

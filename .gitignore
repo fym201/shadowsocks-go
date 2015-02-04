@@ -1,1 +1,3 @@
 *.deb
+/cmd/shadowsocks-local/config.json
+/cmd/shadowsocks-server/config.json
