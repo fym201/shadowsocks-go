@@ -2,8 +2,6 @@ package shadowsocks
 
 import (
 	"bytes"
-	"golang.org/x/crypto/blowfish"
-	"golang.org/x/crypto/cast5"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/des"
@@ -12,6 +10,8 @@ import (
 	"crypto/rc4"
 	"encoding/binary"
 	"errors"
+	"github.com/golang/crypto/blowfish"
+	"github.com/golang/crypto/cast5"
 	"io"
 )
 
