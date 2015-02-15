@@ -10,7 +10,7 @@ import (
 	"sync"
 	"syscall"
 
-	"github.com/fym201/go-logger/logger"
+	"github.com/fym201/loggo"
 	ss "github.com/fym201/shadowsocks-go/shadowsocks"
 )
 
@@ -23,7 +23,7 @@ type PortListener struct {
 }
 
 type Server struct {
-	logger         *logger.Logger
+	logger         *loggo.Logger
 	Config         *ss.Config
 	ConnectCount   int
 	nextLogConnCnt int
@@ -34,7 +34,7 @@ type Server struct {
 }
 
 //创建一个服务
-func NewServer(config *ss.Config, out *logger.Logger) (sev *Server, err error) {
+func NewServer(config *ss.Config, out *loggo.Logger) (sev *Server, err error) {
 	if err = checkConfig(config); err != nil {
 		return
 	}
