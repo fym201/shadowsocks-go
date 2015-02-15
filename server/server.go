@@ -2,12 +2,10 @@ package server
 
 import (
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"io"
 	"net"
 	"strconv"
-	"sync"
 	"syscall"
 
 	"github.com/fym201/loggo"
@@ -17,67 +15,31 @@ import (
 const logCntDelta = 100
 const dnsGoroutineNum = 64
 
-type PortListener struct {
-	password string
-	listener net.Listener
-}
-
 type Server struct {
 	logger         *loggo.Logger
-	Config         *ss.Config
+	Config         *Config
 	ConnectCount   int
 	nextLogConnCnt int
 	Running        bool
-
-	listeners     map[string]*PortListener
-	listener_lock *sync.Mutex
+	listener       net.Listener
 }
 
-//创建一个服务
-func NewServer(config *ss.Config, out *loggo.Logger) (sev *Server, err error) {
-	if err = checkConfig(config); err != nil {
+// Create a shawdowsocks server
+func NewServer(config *Config, out *loggo.Logger) (sev *Server, err error) {
+	if err = CheckConfig(config); err != nil {
 		return
 	}
 
-	sev = &Server{logger: out,
-		Config:        config,
-		listeners:     map[string]*PortListener{},
-		listener_lock: &sync.Mutex{}}
-	sev.nextLogConnCnt = logCntDelta
+	sev = &Server{logger: out, Config: config, nextLogConnCnt: logCntDelta}
+
 	return
 }
 
-func checkConfig(config *ss.Config) (err error) {
-	if config == nil {
-		err = errors.New("config is nil")
+func NewAndStartServer(config *Config, out *loggo.Logger) (sev *Server, err error) {
+	if sev, err = NewServer(config, out); err != nil {
 		return
 	}
-
-	if len(config.PortPassword) == 0 {
-
-		if config.ServerPort == 0 {
-			err = errors.New("no ServerPort found")
-			return
-		}
-
-		if config.Password == "" {
-			err = errors.New("ServerPassword is empty")
-			return
-		}
-		config.PortPassword = map[string]string{strconv.Itoa(config.ServerPort): config.Password}
-	} else {
-		if config.Password != "" || config.ServerPort != 0 {
-			fmt.Println("given port_password, ignore server_port and password option")
-		}
-	}
-
-	if config.Method == "" {
-		config.Method = "aes-256-cfb"
-	}
-
-	if err = ss.CheckCipherMethod(config.Method); err != nil {
-		return
-	}
+	err = sev.Start()
 	return
 }
 
@@ -87,9 +49,8 @@ func (s *Server) Start() error {
 		return nil
 	}
 	s.Running = true
-	for port, password := range s.Config.PortPassword {
-		go s.run(port, password)
-	}
+
+	go s.run()
 	return nil
 }
 
@@ -99,29 +60,20 @@ func (s *Server) Stop() error {
 		return nil
 	}
 	s.Running = false
-	s.listener_lock.Lock()
-	var tm_ports []string
-	for port, listenner := range s.listeners {
-		listenner.listener.Close()
-		tm_ports = append(tm_ports, port)
-	}
-	for _, port := range tm_ports {
-		delete(s.listeners, port)
-	}
-	s.listener_lock.Unlock()
+	s.listener.Close()
 	return nil
 }
 
 //run a server on given port
-func (s *Server) run(port, password string) {
-	ln, err := net.Listen("tcp", ":"+port)
+func (s *Server) run() {
+	ln, err := net.Listen("tcp", s.Config.Address())
 	if err != nil {
-		s.logger.Fatalf("error listening port %v: %v\n", port, err)
+		s.logger.Fatalf("error listening ip:%v port:%v [%v]", s.Config.Ip, s.Config.Port, err)
 		return
 	}
-	s.add(port, password, ln)
+	s.listener = ln
 	var cipher *ss.Cipher
-	s.logger.Infof("server listening port %v ...\n", port)
+	s.logger.Infof("server listening ip:%v port:%v ...", s.Config.Ip, s.Config.Port)
 	for s.Running {
 		conn, err := ln.Accept()
 		if err != nil {
@@ -131,81 +83,16 @@ func (s *Server) run(port, password string) {
 		}
 		// Creating cipher upon first connection.
 		if cipher == nil {
-			s.logger.Debug("creating cipher for port:", port)
-			cipher, err = ss.NewCipher(s.Config.Method, password)
+			s.logger.Debug("creating cipher for port:", s.Config.Port)
+			cipher, err = ss.NewCipher(s.Config.Method, s.Config.Password)
 			if err != nil {
-				s.logger.Errorf("Error generating cipher for port: %s %v\n", port, err)
+				s.logger.Errorf("Error generating cipher for port: %s %v\n", s.Config.Port, err)
 				conn.Close()
 				continue
 			}
 		}
 		go s.handleConnection(ss.NewConn(conn, cipher.Copy()))
 	}
-}
-
-func (s *Server) add(port, password string, listener net.Listener) {
-	s.listener_lock.Lock()
-	s.listeners[port] = &PortListener{password, listener}
-	s.listener_lock.Unlock()
-}
-
-func (s *Server) get(port string) (pl *PortListener, ok bool) {
-	s.listener_lock.Lock()
-	pl, ok = s.listeners[port]
-	s.listener_lock.Unlock()
-	return
-}
-
-func (s *Server) del(port string) {
-	pl, ok := s.get(port)
-	if !ok {
-		return
-	}
-	pl.listener.Close()
-	s.listener_lock.Lock()
-	delete(s.listeners, port)
-	s.listener_lock.Unlock()
-}
-
-// Update port password would first close a port and restart listening on that port
-func (s *Server) UpdatePortPasswd(port, password string) {
-	pl, ok := s.get(port)
-	if !ok {
-		s.logger.Info("new port %s added\n", port)
-	} else {
-		if pl.password == password {
-			return
-		}
-		s.logger.Infof("closing port %s to update password\n", port)
-		pl.listener.Close()
-	}
-
-	go s.run(port, password)
-}
-
-//update server config
-func (s *Server) UpdateConfig(config *ss.Config) {
-	if err := checkConfig(config); err != nil {
-		s.logger.Error("UpdateConfig error:", err.Error())
-	}
-
-	s.Config = config
-
-	s.listener_lock.Lock()
-	var tm_ports []string
-	for port, conn := range s.listeners {
-		if pw, ok := config.PortPassword[port]; ok {
-			s.UpdatePortPasswd(port, pw)
-		} else {
-			tm_ports = append(tm_ports, port)
-			conn.listener.Close()
-		}
-	}
-	for _, port := range tm_ports {
-		delete(s.listeners, port)
-	}
-	s.listener_lock.Unlock()
-	s.logger.Info("password updated")
 }
 
 func (s *Server) getRequest(conn *ss.Conn) (host string, extra []byte, err error) {
@@ -290,10 +177,10 @@ func (s *Server) handleConnection(conn *ss.Conn) {
 
 	// function arguments are always evaluated, so surround debug statement
 	// with if statement
-	s.logger.Infof("new client %s->%s\n", conn.RemoteAddr().String(), conn.LocalAddr())
+	s.logger.Infof("new client %s->%s", conn.RemoteAddr().String(), conn.LocalAddr())
 	closed := false
 	defer func() {
-		s.logger.Infof("closed pipe %s<->%s\n", conn.RemoteAddr(), host)
+		s.logger.Infof("closed pipe %s<->%s", conn.RemoteAddr(), host)
 		s.ConnectCount--
 		if !closed {
 			conn.Close()
@@ -302,7 +189,7 @@ func (s *Server) handleConnection(conn *ss.Conn) {
 
 	host, extra, err := s.getRequest(conn)
 	if err != nil {
-		s.logger.Errorf("error getting request", conn.RemoteAddr(), conn.LocalAddr(), err)
+		s.logger.Error("error getting request", conn.RemoteAddr(), conn.LocalAddr(), err)
 		return
 	}
 	s.logger.Info("connecting", host)
@@ -330,7 +217,7 @@ func (s *Server) handleConnection(conn *ss.Conn) {
 			return
 		}
 	}
-	s.logger.Error("piping %s<->%s", conn.RemoteAddr(), host)
+	s.logger.Infof("piping %s<->%s", conn.RemoteAddr(), host)
 	go ss.PipeThenClose(conn, remote, ss.SET_TIMEOUT)
 	ss.PipeThenClose(remote, conn, ss.NO_TIMEOUT)
 	closed = true

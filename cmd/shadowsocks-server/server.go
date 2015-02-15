@@ -1,10 +1,14 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"os"
 	"os/signal"
+	"reflect"
 	"runtime"
+	"strconv"
+	"sync"
 	"syscall"
 
 	"github.com/fym201/shadowsocks-go/server"
@@ -15,13 +19,114 @@ import (
 	"github.com/fym201/loggo"
 )
 
-var configFile string
-var config *ss.Config
-var lg *loggo.Logger
-var shadowserver *server.Server
+var (
+	configFile string
+	config     *ss.Config
+	lg         *loggo.Logger
+	servers    map[string]*server.Server
+	servlock   *sync.Mutex
+	serverIp   string
+)
+
+func updateConfig() {
+	lg.Info("updating password")
+	newconfig, err := ss.ParseConfig(configFile)
+	if err != nil {
+		lg.Errorf("error parsing config file %s to update password: %v", configFile, err)
+		return
+	}
+	if err := unifyPortPassword(newconfig); err != nil {
+		return
+	}
+	oldconfig := config
+	config = newconfig
+	for port, password := range newconfig.PortPassword {
+		updatePortPassword(port, password)
+		delete(oldconfig.PortPassword, port)
+	}
+
+	for port, _ := range oldconfig.PortPassword {
+		del(port)
+	}
+	lg.Info("password updated")
+}
+
+func add(serv *server.Server) {
+	servlock.Lock()
+	servers[serv.Config.Port] = serv
+	servlock.Unlock()
+}
+
+func del(port string) {
+	if serv := get(port); serv != nil {
+		serv.Stop()
+	}
+	servlock.Lock()
+	delete(servers, port)
+	servlock.Unlock()
+}
+
+func get(port string) *server.Server {
+	servlock.Lock()
+	defer servlock.Unlock()
+	return servers[port]
+}
+
+func updatePortPassword(port, password string) {
+	serv := get(port)
+	if serv == nil {
+		return
+	}
+	if serv.Config.Password == password {
+		return
+	}
+	del(port)
+
+	conf := &server.Config{Ip: serverIp, Port: port, Password: password, Method: config.Method}
+	if serv, err := server.NewAndStartServer(conf, lg); err != nil {
+		lg.Error("create server at ", port, err)
+	} else {
+		add(serv)
+	}
+
+}
+
+func unifyPortPassword(config *ss.Config) (err error) {
+	if len(config.PortPassword) == 0 { // this handles both nil PortPassword and empty one
+		if config.ServerPort == 0 && config.Password == "" {
+			lg.Error("must specify both port and password")
+			return errors.New("not enough options")
+		}
+		port := strconv.Itoa(config.ServerPort)
+		config.PortPassword = map[string]string{port: config.Password}
+	} else {
+		if config.Password != "" || config.ServerPort != 0 {
+			lg.Info("given port_password, ignore server_port and password option")
+		}
+	}
+	return
+}
+
+func waitSignal() {
+	var sigChan = make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGHUP)
+	for sig := range sigChan {
+		if sig == syscall.SIGHUP {
+			updateConfig()
+		} else {
+			// is this going to happen?
+			lg.Infof("caught signal %v, exit", sig)
+			os.Exit(0)
+		}
+	}
+}
 
 func main() {
 	runtime.GOMAXPROCS(runtime.NumCPU())
+
+	servers = map[string]*server.Server{}
+
+	servlock = &sync.Mutex{}
 
 	fmt.Println("start")
 
@@ -59,30 +164,24 @@ func main() {
 		}
 		config = &cmdConfig
 	} else {
+		if err = unifyPortPassword(config); err != nil {
+			panic(err)
+		}
 		ss.UpdateConfig(config, &cmdConfig)
 	}
 
-	if shadowserver, err = server.NewServer(config, lg); err != nil {
-		panic(err)
+	if config.Server != nil && reflect.TypeOf(config.Server).Kind() == reflect.String {
+		serverIp = config.Server.(string)
 	}
 
-	if err = shadowserver.Start(); err != nil {
-		panic(err)
+	for port, password := range config.PortPassword {
+		conf := &server.Config{Ip: serverIp, Port: port, Password: password, Method: config.Method}
+		if serv, err := server.NewAndStartServer(conf, lg); err != nil {
+			lg.Error("create server at ", port, err)
+		} else {
+			add(serv)
+		}
 	}
 
 	waitSignal()
-}
-
-func waitSignal() {
-	var sigChan = make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGHUP)
-	for sig := range sigChan {
-		if sig == syscall.SIGHUP {
-			shadowserver.UpdateConfig(config)
-		} else {
-			// is this going to happen?
-			lg.Infof("caught signal %v, exit", sig)
-			os.Exit(0)
-		}
-	}
 }

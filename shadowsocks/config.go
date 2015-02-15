@@ -28,6 +28,7 @@ func init() {
 */
 
 type Config struct {
+	Name       string      `json:"name"`
 	Server     interface{} `json:"server"`
 	ServerPort int         `json:"server_port"`
 	LocalPort  int         `json:"local_port"`
