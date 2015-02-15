@@ -35,8 +35,8 @@ func PipeThenClose(src, dst net.Conn, timeoutOpt int) {
 		// read may return EOF with n > 0
 		// should always process n > 0 bytes before handling error
 		if n > 0 {
-			if _, err = dst.Write(buf[0:n]); err != nil {
-				Debug.Println("write:", err)
+			if _, err = dst.Write(buf[0:n]); err != nil && logger != nil {
+				logger.Debug("write:", err)
 				break
 			}
 		}
@@ -45,8 +45,8 @@ func PipeThenClose(src, dst net.Conn, timeoutOpt int) {
 			// identify this specific error. So just leave the error along for now.
 			// More info here: https://code.google.com/p/go/issues/detail?id=4373
 			/*
-				if bool(Debug) && err != io.EOF {
-					Debug.Println("read:", err)
+				if err != io.EOF && logger != nil{
+					logger.Debug("read:", err)
 				}
 			*/
 			break

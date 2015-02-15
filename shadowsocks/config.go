@@ -15,7 +15,17 @@ import (
 	"os"
 	"reflect"
 	"time"
+
+	"github.com/fym201/loggo"
 )
+
+var logger *loggo.Logger
+
+/*
+func init() {
+	logger = loggo.NewConsoleLogger()
+}
+*/
 
 type Config struct {
 	Server     interface{} `json:"server"`
@@ -88,8 +98,8 @@ func ParseConfig(path string) (config *Config, err error) {
 	return
 }
 
-func SetDebug(d DebugLog) {
-	Debug = d
+func SetLogger(lg *loggo.Logger) {
+	logger = lg
 }
 
 // Useful for command line to override options specified in config file
