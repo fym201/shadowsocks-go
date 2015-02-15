@@ -4,7 +4,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"flag"
-	"fmt"
 	ss "github.com/fym201/shadowsocks-go/shadowsocks"
 	"io"
 	"log"
@@ -14,9 +13,15 @@ import (
 	"path"
 	"strconv"
 	"time"
+
+	"github.com/fym201/loggo"
 )
 
-var debug ss.DebugLog
+var lg *loggo.Logger
+
+func init() {
+	lg = loggo.NewConsoleLogger()
+}
 
 var (
 	errAddrType      = errors.New("socks addr type not supported")
@@ -132,7 +137,7 @@ func getRequest(conn net.Conn) (rawaddr []byte, host string, err error) {
 
 	rawaddr = buf[idType:reqLen]
 
-	if debug {
+	if lg.LogLevel <= loggo.DEBUG {
 		switch buf[idType] {
 		case typeIPv4:
 			host = net.IP(buf[idIP0 : idIP0+net.IPv4len]).String()
@@ -237,7 +242,7 @@ func connectToServer(serverId int, rawaddr []byte, addr string) (remote *ss.Conn
 		}
 		return nil, err
 	}
-	debug.Printf("connected to %s via %s\n", addr, se.server)
+	lg.Debugf("connected to %s via %s\n", addr, se.server)
 	servers.failCnt[serverId] = 0
 	return
 }
@@ -272,9 +277,7 @@ func createServerConn(rawaddr []byte, addr string) (remote *ss.Conn, err error) 
 }
 
 func handleConnection(conn net.Conn) {
-	if debug {
-		debug.Printf("socks connect from %s\n", conn.RemoteAddr().String())
-	}
+	lg.Debugf("socks connect from %s\n", conn.RemoteAddr().String())
 	closed := false
 	defer func() {
 		if !closed {
@@ -284,12 +287,12 @@ func handleConnection(conn net.Conn) {
 
 	var err error = nil
 	if err = handShake(conn); err != nil {
-		log.Println("socks handshake:", err)
+		lg.Debug("socks handshake:", err)
 		return
 	}
 	rawaddr, addr, err := getRequest(conn)
 	if err != nil {
-		log.Println("error getting request:", err)
+		lg.Error("error getting request:", err)
 		return
 	}
 	// Sending connection established message immediately to client.
@@ -297,14 +300,14 @@ func handleConnection(conn net.Conn) {
 	// But if connection failed, the client will get connection reset error.
 	_, err = conn.Write([]byte{0x05, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x08, 0x43})
 	if err != nil {
-		debug.Println("send connection confirmation:", err)
+		lg.Error("send connection confirmation:", err)
 		return
 	}
 
 	remote, err := createServerConn(rawaddr, addr)
 	if err != nil {
 		if len(servers.srvCipher) > 1 {
-			log.Println("Failed connect to all avaiable shadowsocks server")
+			lg.Error("Failed connect to all avaiable shadowsocks server")
 		}
 		return
 	}
@@ -317,7 +320,7 @@ func handleConnection(conn net.Conn) {
 	go ss.PipeThenClose(conn, remote, ss.NO_TIMEOUT)
 	ss.PipeThenClose(remote, conn, ss.NO_TIMEOUT)
 	closed = true
-	debug.Println("closed connection to", addr)
+	lg.Debug("closed connection to", addr)
 }
 
 func run(listenAddr string) {
@@ -325,11 +328,11 @@ func run(listenAddr string) {
 	if err != nil {
 		log.Fatal(err)
 	}
-	log.Printf("starting local socks5 server at %v ...\n", listenAddr)
+	lg.Infof("starting local socks5 server at %v ...", listenAddr)
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
-			log.Println("accept:", err)
+			lg.Error("accept:", err)
 			continue
 		}
 		go handleConnection(conn)
@@ -347,6 +350,7 @@ func main() {
 	var configFile, cmdServer, cmdLocal string
 	var cmdConfig ss.Config
 	var printVer bool
+	var loglevel int
 
 	flag.BoolVar(&printVer, "version", false, "print version")
 	flag.StringVar(&configFile, "c", "config.json", "specify config file")
@@ -356,9 +360,11 @@ func main() {
 	flag.IntVar(&cmdConfig.ServerPort, "p", 0, "server port")
 	flag.IntVar(&cmdConfig.LocalPort, "l", 0, "local socks5 proxy port")
 	flag.StringVar(&cmdConfig.Method, "m", "", "encryption method, default: aes-256-cfb")
-	flag.BoolVar((*bool)(&debug), "d", false, "print debug message")
+	flag.IntVar(&loglevel, "d", int(loggo.DEBUG), "print debug message")
 
 	flag.Parse()
+
+	lg.LogLevel = loggo.LEVEL(loglevel)
 
 	if printVer {
 		ss.PrintVersion()
@@ -366,7 +372,7 @@ func main() {
 	}
 
 	cmdConfig.Server = cmdServer
-	ss.SetDebug(debug)
+	ss.SetLogger(lg)
 
 	exists, err := ss.IsFileExists(configFile)
 	// If no config file in current directory, try search it in the binary directory
@@ -375,14 +381,14 @@ func main() {
 	if (!exists || err != nil) && binDir != "" && binDir != "." {
 		oldConfig := configFile
 		configFile = path.Join(binDir, "config.json")
-		log.Printf("%s not found, try config file %s\n", oldConfig, configFile)
+		lg.Debugf("%s not found, try config file %s", oldConfig, configFile)
 	}
 
 	config, err := ss.ParseConfig(configFile)
 	if err != nil {
 		config = &cmdConfig
 		if !os.IsNotExist(err) {
-			fmt.Fprintf(os.Stderr, "error reading %s: %v\n", configFile, err)
+			lg.Errorf("error reading %s: %v\n", configFile, err)
 			os.Exit(1)
 		}
 	} else {
@@ -393,15 +399,15 @@ func main() {
 	}
 	if len(config.ServerPassword) == 0 {
 		if !enoughOptions(config) {
-			fmt.Fprintln(os.Stderr, "must specify server address, password and both server/local port")
+			lg.Errorf("must specify server address, password and both server/local port")
 			os.Exit(1)
 		}
 	} else {
 		if config.Password != "" || config.ServerPort != 0 || config.GetServerArray() != nil {
-			fmt.Fprintln(os.Stderr, "given server_password, ignore server, server_port and password option:", config)
+			lg.Errorf("given server_password, ignore server, server_port and password option:", config)
 		}
 		if config.LocalPort == 0 {
-			fmt.Fprintln(os.Stderr, "must specify local port")
+			lg.Errorf("must specify local port")
 			os.Exit(1)
 		}
 	}

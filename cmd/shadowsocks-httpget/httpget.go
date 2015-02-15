@@ -3,7 +3,6 @@ package main
 import (
 	"flag"
 	"fmt"
-	ss "github.com/shadowsocks/shadowsocks-go/shadowsocks"
 	"io"
 	"math"
 	"net"
@@ -14,7 +13,16 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/fym201/loggo"
+	ss "github.com/fym201/shadowsocks-go/shadowsocks"
 )
+
+var lg *loggo.Logger
+
+func init() {
+	lg = loggo.NewConsoleLogger()
+}
 
 var config struct {
 	server string
@@ -27,8 +35,6 @@ var config struct {
 	// nsec   int
 }
 
-var debug ss.DebugLog
-
 func doOneRequest(client *http.Client, uri string, buf []byte) (err error) {
 	resp, err := client.Get(uri)
 	if err != nil {
@@ -37,12 +43,10 @@ func doOneRequest(client *http.Client, uri string, buf []byte) (err error) {
 	}
 	for err == nil {
 		_, err = resp.Body.Read(buf)
-		if debug {
-			debug.Println(string(buf))
-		}
+		lg.Debug(string(buf))
 	}
 	if err != io.EOF {
-		fmt.Printf("Read %s response error: %v\n", uri, err)
+		lg.Errorf("Read %s response error: %v\n", uri, err)
 	} else {
 		err = nil
 	}
@@ -71,12 +75,13 @@ func get(connid int, uri, serverAddr string, rawAddr []byte, cipher *ss.Cipher, 
 		reqTime[reqDone] = time.Now().Sub(start)
 
 		if (reqDone+1)%1000 == 0 {
-			fmt.Printf("conn %d finished %d get requests\n", connid, reqDone+1)
+			lg.Infof("conn %d finished %d get requests\n", connid, reqDone+1)
 		}
 	}
 }
 
 func main() {
+	var loglevel int
 	flag.StringVar(&config.server, "s", "127.0.0.1", "server:port")
 	flag.IntVar(&config.port, "p", 0, "server:port")
 	flag.IntVar(&config.core, "core", 1, "number of CPU cores to use")
@@ -85,19 +90,19 @@ func main() {
 	flag.IntVar(&config.nconn, "nc", 1, "number of connection to server")
 	flag.IntVar(&config.nreq, "nr", 1, "number of request for each connection")
 	// flag.IntVar(&config.nsec, "ns", 0, "run how many seconds for each connection")
-	flag.BoolVar((*bool)(&debug), "d", false, "print http response body for debugging")
+	flag.IntVar(&loglevel, "d", int(loggo.DEBUG), "print http response body for debugging")
 
 	flag.Parse()
 
 	if config.server == "" || config.port == 0 || config.passwd == "" || len(flag.Args()) != 1 {
-		fmt.Printf("Usage: %s -s <server> -p <port> -k <password> <url>\n", os.Args[0])
+		lg.Fatalf("Usage: %s -s <server> -p <port> -k <password> <url>", os.Args[0])
 		os.Exit(1)
 	}
 
 	runtime.GOMAXPROCS(config.core)
 	uri := flag.Arg(0)
 	if strings.HasPrefix(uri, "https://") {
-		fmt.Println("https not supported")
+		lg.Fatal("https not supported")
 		os.Exit(1)
 	}
 	if !strings.HasPrefix(uri, "http://") {
@@ -106,14 +111,14 @@ func main() {
 
 	cipher, err := ss.NewCipher(config.method, config.passwd)
 	if err != nil {
-		fmt.Println("Error creating cipher:", err)
+		lg.Fatal("Error creating cipher:", err)
 		os.Exit(1)
 	}
 	serverAddr := net.JoinHostPort(config.server, strconv.Itoa(config.port))
 
 	parsedURL, err := url.Parse(uri)
 	if err != nil {
-		fmt.Println("Error parsing url:", err)
+		lg.Fatal("Error parsing url:", err)
 		os.Exit(1)
 	}
 	host, _, err := net.SplitHostPort(parsedURL.Host)
@@ -122,7 +127,7 @@ func main() {
 	} else {
 		host = parsedURL.Host
 	}
-	// fmt.Println(host)
+
 	rawAddr, err := ss.RawAddr(host)
 	if err != nil {
 		panic("Error getting raw address.")
@@ -144,8 +149,8 @@ func main() {
 		}
 	}
 
-	fmt.Println("number of total requests:", config.nconn*config.nreq)
-	fmt.Println("number of finished requests:", reqDone)
+	lg.Debug("number of total requests:", config.nconn*config.nreq)
+	lg.Debug("number of finished requests:", reqDone)
 	if reqDone == 0 {
 		return
 	}
@@ -165,6 +170,6 @@ func main() {
 		varSum += di
 	}
 	stddev := math.Sqrt(varSum / float64(reqDone))
-	fmt.Println("\naverage time per request:", time.Duration(avg))
-	fmt.Println("standard deviation:", time.Duration(stddev))
+	lg.Debug("\naverage time per request:", time.Duration(avg))
+	lg.Debug("standard deviation:", time.Duration(stddev))
 }
